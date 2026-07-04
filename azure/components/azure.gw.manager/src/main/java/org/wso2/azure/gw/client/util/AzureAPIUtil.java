@@ -396,7 +396,10 @@ public class AzureAPIUtil {
         context += "/" + apiIdentifier.getVersion();
 
         api.setDisplayName(apiContract.displayName());
-        api.setUuid(UUID.randomUUID().toString());
+        String uuidSeed = apiContract.name() + "-" + organization;
+        String deterministicUuid = UUID.nameUUIDFromBytes(
+                uuidSeed.getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+        api.setUuid(deterministicUuid);
         api.setDescription(apiContract.description());
         api.setContext(context);
         api.setContextTemplate(contextTemplate);

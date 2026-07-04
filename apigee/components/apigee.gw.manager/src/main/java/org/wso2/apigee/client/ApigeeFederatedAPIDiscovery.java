@@ -131,7 +131,7 @@ ApigeeFederatedAPIDiscovery implements FederatedAPIDiscovery {
      */
     @Override
     public List<DiscoveredAPI> discoverAPI() {
-        List<DiscoveredAPI> retrievedAPIs = new ArrayList<>();
+        List<DiscoveredAPI> retrievedAPIs = java.util.Collections.synchronizedList(new ArrayList<>());
         try {
             try {
                 credentials.refreshIfExpired();
@@ -147,7 +147,7 @@ ApigeeFederatedAPIDiscovery implements FederatedAPIDiscovery {
             // 1. List all API proxies (returns empty list on network error — see ApigeeAPIUtil)
             List<String> proxyNames = ApigeeAPIUtil.listApiProxies(org, accessToken);
 
-            for (String proxyName : proxyNames) {
+            proxyNames.parallelStream().forEach(proxyName -> {
                 try {
                     // 2. Check if the proxy is deployed to the configured environment
                     boolean deployed = ApigeeAPIUtil.isProxyDeployedToEnvironment(
@@ -170,7 +170,7 @@ ApigeeFederatedAPIDiscovery implements FederatedAPIDiscovery {
 
                         if (apiDefinition == null) {
                             log.debug("Skipping proxy '" + proxyName + "' because OpenAPI spec could not be constructed.");
-                            continue;
+                            return;
                         }
 
                         // Get revision details to extract basepath
@@ -216,19 +216,199 @@ ApigeeFederatedAPIDiscovery implements FederatedAPIDiscovery {
                     log.error("Error discovering Apigee proxy '" + proxyName + "': " + e.getMessage(), e);
                     // Continue with next proxy instead of failing completely
                 }
-            }
+            });
         } catch (Exception e) {
             log.error("Error during Apigee API discovery: " + e.getMessage(), e);
         }
 
-        return retrievedAPIs;
+        return new ArrayList<>(retrievedAPIs);
+    }
+
+    @Override
+    public List<DiscoveredAPI> discoverMetadata() {
+        log.info("[LOGGING] Apigee Connector: discoverMetadata() called. Fetching metadata for Apigee API proxies in parallel.");
+        List<DiscoveredAPI> retrievedAPIs = java.util.Collections.synchronizedList(new ArrayList<>());
+        try {
+            try {
+                credentials.refreshIfExpired();
+            } catch (Exception e) {
+                log.warn("Could not refresh GCP credentials (network issue?); "
+                        + "skipping discovery cycle: " + e.getMessage());
+                return retrievedAPIs;
+            }
+            String accessToken = credentials.getAccessToken().getTokenValue();
+            String org = this.apigeeOrganization;
+
+            List<String> proxyNames = ApigeeAPIUtil.listApiProxies(org, accessToken);
+
+            proxyNames.parallelStream().forEach(proxyName -> {
+                try {
+                    boolean deployed = ApigeeAPIUtil.isProxyDeployedToEnvironment(
+                            org, proxyName, apigeeEnvironment, accessToken);
+
+                    String revision;
+                    String apiDefinition = "";
+                    String basepath;
+
+                    if (deployed) {
+                        revision = ApigeeAPIUtil.getLatestDeployedRevision(
+                                org, proxyName, apigeeEnvironment, accessToken);
+                        JsonObject revisionDetails = ApigeeAPIUtil.getApiProxyRevisionDetails(
+                                org, proxyName, revision, accessToken);
+                        basepath = ApigeeAPIUtil.getProxyBasepath(revisionDetails);
+                    } else {
+                        revision = "0";
+                        basepath = "/" + proxyName.toLowerCase();
+                    }
+
+                    JsonObject proxyMetadata = ApigeeAPIUtil.getApiProxyMetadata(
+                            org, proxyName, accessToken);
+
+                    API api = ApigeeAPIUtil.proxyToAPI(
+                            proxyName, proxyMetadata, apiDefinition, organization, environment,
+                            this.apigeeOrganization, basepath, deployed);
+
+                    String referenceArtifact = ApigeeAPIUtil.createReferenceArtifact(
+                            proxyName, revision, apiDefinition, deployed);
+
+                    DiscoveredAPI discoveredAPI = new DiscoveredAPI(api, referenceArtifact);
+                    retrievedAPIs.add(discoveredAPI);
+
+                } catch (Exception e) {
+                    log.error("Error discovering Apigee proxy metadata '"
+                            + proxyName + "': " + e.getMessage(), e);
+                }
+            });
+        } catch (Exception e) {
+            log.error("Error during Apigee API metadata discovery: " + e.getMessage(), e);
+        }
+
+        return new ArrayList<>(retrievedAPIs);
+    }
+
+    @Override
+    public List<DiscoveredAPI> discoverAPI(List<String> apiIds) {
+        log.info("[LOGGING] Apigee Connector: discoverAPI(List<String> apiIds) called with IDs: " + apiIds);
+        List<DiscoveredAPI> retrievedAPIs = java.util.Collections.synchronizedList(new ArrayList<>());
+        try {
+            try {
+                credentials.refreshIfExpired();
+            } catch (Exception e) {
+                log.warn("Could not refresh GCP credentials (network issue?); "
+                        + "skipping discovery cycle: " + e.getMessage());
+                return retrievedAPIs;
+            }
+            String accessToken = credentials.getAccessToken().getTokenValue();
+            String org = this.apigeeOrganization;
+
+            List<String> proxyNames = ApigeeAPIUtil.listApiProxies(org, accessToken);
+
+            proxyNames.parallelStream().forEach(proxyName -> {
+                try {
+                    String normalizedProxyName = proxyName == null ? "" : proxyName.trim();
+                    String normalizedOrganization = organization == null ? "" : organization.trim();
+                    String uuidSeed = normalizedProxyName + "-" + normalizedOrganization;
+                    String deterministicUuid = java.util.UUID.nameUUIDFromBytes(
+                            uuidSeed.getBytes(java.nio.charset.StandardCharsets.UTF_8)).toString();
+                    String compositeKey = proxyName + ":" + ApigeeConstants.DEFAULT_VERSION;
+
+                    if (apiIds.contains(deterministicUuid) || apiIds.contains(compositeKey)) {
+                        log.info("[LOGGING] Apigee Connector: MATCH FOUND. Fetching full specification (OAS definition) for Apigee proxy: " + proxyName);
+                        boolean deployed = ApigeeAPIUtil.isProxyDeployedToEnvironment(
+                                org, proxyName, apigeeEnvironment, accessToken);
+
+                        String revision;
+                        String apiDefinition;
+                        String basepath;
+
+                        if (deployed) {
+                            revision = ApigeeAPIUtil.getLatestDeployedRevision(
+                                    org, proxyName, apigeeEnvironment, accessToken);
+                            apiDefinition = ApigeeAPIUtil.getApiProxyOpenAPISpec(
+                                    org, proxyName, revision, environment, accessToken);
+
+                            if (apiDefinition == null) {
+                                log.debug("Skipping proxy '" + proxyName
+                                        + "' because OpenAPI spec could not be constructed.");
+                                return;
+                            }
+
+                            JsonObject revisionDetails = ApigeeAPIUtil.getApiProxyRevisionDetails(
+                                    org, proxyName, revision, accessToken);
+                            basepath = ApigeeAPIUtil.getProxyBasepath(revisionDetails);
+                        } else {
+                            revision = "0";
+                            apiDefinition = ApigeeAPIUtil.buildUndeployedOpenAPISpec(
+                                    proxyName, environment);
+                            basepath = "/" + proxyName.toLowerCase();
+                        }
+
+                        JsonObject proxyMetadata = ApigeeAPIUtil.getApiProxyMetadata(
+                                org, proxyName, accessToken);
+
+                        API api = ApigeeAPIUtil.proxyToAPI(
+                                proxyName, proxyMetadata, apiDefinition, organization, environment,
+                                this.apigeeOrganization, basepath, deployed);
+
+                        String referenceArtifact = ApigeeAPIUtil.createReferenceArtifact(
+                                proxyName, revision, apiDefinition, deployed);
+
+                        DiscoveredAPI discoveredAPI = new DiscoveredAPI(api, referenceArtifact);
+                        retrievedAPIs.add(discoveredAPI);
+                    }
+                } catch (Exception e) {
+                    log.error("Error discovering Apigee proxy '" + proxyName + "': " + e.getMessage(), e);
+                }
+            });
+        } catch (Exception e) {
+            log.error("Error during Apigee API discovery: " + e.getMessage(), e);
+        }
+
+        return new ArrayList<>(retrievedAPIs);
     }
 
     @Override
     public boolean isAPIUpdated(String existingReferenceArtifact, String newReferenceArtifact) {
-        if (existingReferenceArtifact == null) {
+        if (existingReferenceArtifact == null || newReferenceArtifact == null) {
             return true;
         }
-        return !existingReferenceArtifact.equals(newReferenceArtifact);
+        try {
+            com.google.gson.JsonObject existingJson = com.google.gson.JsonParser
+                    .parseString(existingReferenceArtifact).getAsJsonObject();
+            com.google.gson.JsonObject newJson = com.google.gson.JsonParser
+                    .parseString(newReferenceArtifact).getAsJsonObject();
+
+            if (existingJson.has("proxyName") && newJson.has("proxyName")
+                    && existingJson.has("revision") && newJson.has("revision")
+                    && existingJson.has("deployed") && newJson.has("deployed")) {
+
+                String existingProxyName = existingJson.get("proxyName").getAsString();
+                String newProxyName = newJson.get("proxyName").getAsString();
+                String existingRevision = existingJson.get("revision").getAsString();
+                String newRevision = newJson.get("revision").getAsString();
+                boolean existingDeployed = existingJson.get("deployed").getAsBoolean();
+                boolean newDeployed = newJson.get("deployed").getAsBoolean();
+
+                if (!existingProxyName.equals(newProxyName)
+                        || !existingRevision.equals(newRevision)
+                        || existingDeployed != newDeployed) {
+                    return true;
+                }
+
+                // If both have valid specHash (i.e. not "0"), we can also compare specHash
+                if (existingJson.has("specHash") && newJson.has("specHash")) {
+                    String existingHash = existingJson.get("specHash").getAsString();
+                    String newHash = newJson.get("specHash").getAsString();
+                    if (!"0".equals(existingHash) && !"0".equals(newHash)) {
+                        return !existingHash.equals(newHash);
+                    }
+                }
+                return false;
+            }
+            return !existingReferenceArtifact.equals(newReferenceArtifact);
+        } catch (Exception e) {
+            log.error("Error parsing Apigee reference artifact", e);
+            return !existingReferenceArtifact.equals(newReferenceArtifact);
+        }
     }
 }

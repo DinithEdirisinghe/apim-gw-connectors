@@ -106,24 +106,120 @@ public class AWSFederatedAPIDiscovery implements FederatedAPIDiscovery {
     @Override
     public List<DiscoveredAPI> discoverAPI() {
         List<RestApi> restApis = AWSAPIUtil.getRestApis(apiGatewayClient);
-        List<DiscoveredAPI> retrievedAPIs = new ArrayList<>();
-        for (RestApi restApi : restApis) {
-            String apiStage = AWSAPIUtil.getStageNames(apiGatewayClient, restApi.id());
-            if (!Objects.equals(apiStage, stage)) {
-                continue;
+        List<DiscoveredAPI> retrievedAPIs = java.util.Collections.synchronizedList(new ArrayList<>());
+        
+        restApis.parallelStream().forEach(restApi -> {
+            String deploymentId = getStageDeploymentId(restApi.id());
+            if (deploymentId == null) {
+                return;
             }
             String apiDefinition = AWSAPIUtil.getRestApiDefinition(apiGatewayClient, restApi.id(), stage);
             API api = AWSAPIUtil.restAPItoAPI(restApi, apiDefinition, organization, environment);
             AWSAPIUtil.setEndpointConfig(api, restApi, apiGatewayClient);
+            
             DiscoveredAPI discoveredAPI = new DiscoveredAPI(api,
-                    AWSAPIUtil.createReferenceArtifact(restApi,apiDefinition));
+                    AWSAPIUtil.createReferenceArtifact(restApi, apiDefinition, deploymentId));
             retrievedAPIs.add(discoveredAPI);
-        }
-        return retrievedAPIs;
+        });
+        return new ArrayList<>(retrievedAPIs);
+    }
+
+    @Override
+    public List<DiscoveredAPI> discoverMetadata() {
+        log.info("[LOGGING] AWS Connector: discoverMetadata() called. Fetching metadata for AWS REST APIs in parallel.");
+        List<RestApi> restApis = AWSAPIUtil.getRestApis(apiGatewayClient);
+        List<DiscoveredAPI> retrievedAPIs = java.util.Collections.synchronizedList(new ArrayList<>());
+        
+        restApis.parallelStream().forEach(restApi -> {
+            String deploymentId = getStageDeploymentId(restApi.id());
+            if (deploymentId == null) {
+                return; // Not deployed to this stage, or access denied
+            }
+            
+            // Skip fetching heavy spec definition and endpoint configuration to avoid massive network overhead
+            String apiDefinition = "{}";
+            API api = AWSAPIUtil.restAPItoAPI(restApi, apiDefinition, organization, environment);
+            
+            DiscoveredAPI discoveredAPI = new DiscoveredAPI(api,
+                    AWSAPIUtil.createReferenceArtifact(restApi, apiDefinition, deploymentId));
+            retrievedAPIs.add(discoveredAPI);
+        });
+        return new ArrayList<>(retrievedAPIs);
+    }
+
+    @Override
+    public List<DiscoveredAPI> discoverAPI(List<String> apiIds) {
+        log.info("[LOGGING] AWS Connector: discoverAPI(List<String> apiIds) called in parallel with IDs: " + apiIds);
+        List<RestApi> restApis = AWSAPIUtil.getRestApis(apiGatewayClient);
+        List<DiscoveredAPI> retrievedAPIs = java.util.Collections.synchronizedList(new ArrayList<>());
+        
+        restApis.parallelStream().forEach(restApi -> {
+            String awsApiId = restApi.id();
+            String compositeKey = (restApi.name() != null ? restApi.name() : restApi.id()) + ":" + stage;
+            
+            if (apiIds.contains(awsApiId) || apiIds.contains(compositeKey)) {
+                String deploymentId = getStageDeploymentId(restApi.id());
+                if (deploymentId == null) {
+                    return;
+                }
+                log.info("[LOGGING] AWS Connector: MATCH FOUND. Fetching full specification (OAS definition) for API ID: " + awsApiId);
+                String apiDefinition = AWSAPIUtil.getRestApiDefinition(apiGatewayClient, restApi.id(), stage);
+                API api = AWSAPIUtil.restAPItoAPI(restApi, apiDefinition, organization, environment);
+                AWSAPIUtil.setEndpointConfig(api, restApi, apiGatewayClient);
+                
+                DiscoveredAPI discoveredAPI = new DiscoveredAPI(api,
+                        AWSAPIUtil.createReferenceArtifact(restApi, apiDefinition, deploymentId));
+                retrievedAPIs.add(discoveredAPI);
+            }
+        });
+        return new ArrayList<>(retrievedAPIs);
     }
 
     @Override
     public boolean isAPIUpdated(String existingReferenceArtifact, String newReferenceArtifact) {
-        return !existingReferenceArtifact.equals(newReferenceArtifact);
+        if (existingReferenceArtifact == null || newReferenceArtifact == null) {
+            return true;
+        }
+        try {
+            com.google.gson.JsonArray existingArr = com.google.gson.JsonParser
+                    .parseString(existingReferenceArtifact).getAsJsonArray();
+            com.google.gson.JsonArray newArr = com.google.gson.JsonParser
+                    .parseString(newReferenceArtifact).getAsJsonArray();
+            
+            if (existingArr.size() >= 3 && newArr.size() >= 3) {
+                String existingDeploymentId = existingArr.get(2).getAsString();
+                String newDeploymentId = newArr.get(2).getAsString();
+                return !existingDeploymentId.equals(newDeploymentId);
+            }
+            return !existingReferenceArtifact.equals(newReferenceArtifact);
+        } catch (Exception e) {
+            log.error("Error parsing AWS reference artifact", e);
+            return !existingReferenceArtifact.equals(newReferenceArtifact);
+        }
+    }
+
+    private String getStageDeploymentId(String apiId) {
+        try {
+            software.amazon.awssdk.services.apigateway.model.GetStageRequest request =
+                    software.amazon.awssdk.services.apigateway.model.GetStageRequest.builder()
+                            .restApiId(apiId)
+                            .stageName(stage)
+                            .build();
+            software.amazon.awssdk.services.apigateway.model.GetStageResponse response =
+                    apiGatewayClient.getStage(request);
+            if (response.deploymentId() != null) {
+                return response.deploymentId();
+            }
+        } catch (Exception e) {
+            if (e.getClass().getSimpleName().equals("NotFoundException") || 
+                e.getMessage().contains("NotFoundException") || 
+                e.getMessage().contains("not found")) {
+                log.debug("Stage '" + stage + "' not found for API: " + apiId);
+            } else {
+                log.warn("Could not retrieve stage deployment ID for API: "
+                        + apiId + ", stage: " + stage + ". Error: " + e.getMessage());
+            }
+        }
+        return null;
     }
 }
