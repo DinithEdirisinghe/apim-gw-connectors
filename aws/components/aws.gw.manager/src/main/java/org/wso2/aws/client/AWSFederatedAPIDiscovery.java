@@ -30,7 +30,12 @@ import org.wso2.carbon.apimgt.api.model.API;
 import org.wso2.carbon.apimgt.api.model.DiscoveredAPI;
 import org.wso2.carbon.apimgt.api.model.Environment;
 import software.amazon.awssdk.auth.credentials.AwsBasicCredentials;
+import software.amazon.awssdk.auth.credentials.AwsCredentialsProvider;
+import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;
 import software.amazon.awssdk.auth.credentials.StaticCredentialsProvider;
+import software.amazon.awssdk.services.sts.StsClient;
+import software.amazon.awssdk.services.sts.auth.StsAssumeRoleCredentialsProvider;
+import software.amazon.awssdk.services.sts.model.AssumeRoleRequest;
 import software.amazon.awssdk.http.SdkHttpClient;
 import software.amazon.awssdk.http.apache.ApacheHttpClient;
 import software.amazon.awssdk.regions.Region;
@@ -80,16 +85,48 @@ public class AWSFederatedAPIDiscovery implements FederatedAPIDiscovery {
             String accessKey = environment.getAdditionalProperties().get(AWSConstants.AWS_ENVIRONMENT_ACCESS_KEY);
             String secretKey = environment.getAdditionalProperties().get(AWSConstants.AWS_ENVIRONMENT_SECRET_KEY);
 
-            if (region == null || accessKey == null || secretKey == null) {
-                throw new APIManagementException("Missing required AWS environment configurations");
+            if (region == null || region.isEmpty()) {
+                throw new APIManagementException("AWS Region is a mandatory configuration");
             }
 
+            // Resolve credentials provider: use static keys if provided, otherwise fall back to
+            // DefaultCredentialsProvider which supports IAM Roles (EC2 Instance Profiles, EKS Pod
+            // Identity, environment variables, ~/.aws/credentials, etc.)
+            AwsCredentialsProvider credentialsProvider;
+            if (accessKey != null && !accessKey.isEmpty() && secretKey != null && !secretKey.isEmpty()) {
+                log.debug("Using static AWS credentials for environment: " + environment.getName());
+                credentialsProvider = StaticCredentialsProvider.create(
+                        AwsBasicCredentials.create(accessKey, secretKey));
+            } else {
+                log.info("Static AWS credentials not provided for environment: " + environment.getName()
+                        + ". Falling back to DefaultCredentialsProvider (IAM Roles).");
+                credentialsProvider = DefaultCredentialsProvider.create();
+            }
+
+            // If a Role ARN is provided, assume that role using the base credentials.
+            // This enables cross-account access and least-privilege security.
+            String roleArn = environment.getAdditionalProperties().get(AWSConstants.AWS_ENVIRONMENT_ROLE_ARN);
             SdkHttpClient httpClient = ApacheHttpClient.builder().build();
+            if (roleArn != null && !roleArn.isEmpty()) {
+                log.info("Assuming IAM Role: " + roleArn + " for environment: " + environment.getName());
+                StsClient stsClient = StsClient.builder()
+                        .region(Region.of(region))
+                        .httpClient(httpClient)
+                        .credentialsProvider(credentialsProvider)
+                        .build();
+                credentialsProvider = StsAssumeRoleCredentialsProvider.builder()
+                        .stsClient(stsClient)
+                        .refreshRequest(AssumeRoleRequest.builder()
+                                .roleArn(roleArn)
+                                .roleSessionName("WSO2-APIM-Discovery-" + environment.getName())
+                                .build())
+                        .build();
+            }
+
             this.apiGatewayClient = ApiGatewayClient.builder()
                     .region(Region.of(region))
                     .httpClient(httpClient)
-                    .credentialsProvider(StaticCredentialsProvider.create(
-                            AwsBasicCredentials.create(accessKey, secretKey)))
+                    .credentialsProvider(credentialsProvider)
                     .build();
 
             this.deploymentConfigObject = new JsonObject();
