@@ -700,36 +700,28 @@ public class ApigeeAPIUtil {
 
         // ---------------------------------------------------------------
         // Endpoint configuration
-        // For undeployed proxies, use empty/placeholder URLs
         // ---------------------------------------------------------------
         JsonObject endpointConfig = new JsonObject();
         endpointConfig.addProperty("endpoint_type", "http");
 
         String executionUrl;
-        if (deployed) {
-            // DEPLOYED: Use actual Apigee endpoint URL
-            String hostname = environment.getAdditionalProperties().get(ApigeeConstants.APIGEE_API_HOSTNAME);
-            if (hostname != null && !hostname.trim().isEmpty()) {
-                executionUrl = "https://" + hostname.trim() + basepath;
-            } else {
-                String orgForUrl = apigeeOrganization;
-                if (orgForUrl == null || orgForUrl.trim().isEmpty()) {
-                    orgForUrl = environment.getAdditionalProperties().get(ApigeeConstants.APIGEE_ORGANIZATION);
-                }
-                if ((orgForUrl == null || orgForUrl.trim().isEmpty())
-                        && environment.getAdditionalProperties() != null) {
-                    orgForUrl = environment.getAdditionalProperties().get(ApigeeConstants.APIGEE_ORGANIZATION_LEGACY);
-                }
-                executionUrl = "https://"
-                        + orgForUrl
-                        + "-"
-                        + environment.getAdditionalProperties().get(ApigeeConstants.APIGEE_ENVIRONMENT)
-                        + ".apigee.net" + basepath;
-            }
+        String hostname = environment.getAdditionalProperties().get(ApigeeConstants.APIGEE_API_HOSTNAME);
+        if (hostname != null && !hostname.trim().isEmpty()) {
+            executionUrl = "https://" + hostname.trim() + basepath;
         } else {
-            // NOT DEPLOYED: Use empty placeholder URL
-            // This prevents dev portal from crashing with blank screen
-            executionUrl = "";
+            String orgForUrl = apigeeOrganization;
+            if (orgForUrl == null || orgForUrl.trim().isEmpty()) {
+                orgForUrl = environment.getAdditionalProperties().get(ApigeeConstants.APIGEE_ORGANIZATION);
+            }
+            if ((orgForUrl == null || orgForUrl.trim().isEmpty())
+                    && environment.getAdditionalProperties() != null) {
+                orgForUrl = environment.getAdditionalProperties().get(ApigeeConstants.APIGEE_ORGANIZATION_LEGACY);
+            }
+            executionUrl = "https://"
+                    + orgForUrl
+                    + "-"
+                    + environment.getAdditionalProperties().get(ApigeeConstants.APIGEE_ENVIRONMENT)
+                    + ".apigee.net" + basepath;
         }
 
         JsonObject prod = new JsonObject();
@@ -938,66 +930,7 @@ public class ApigeeAPIUtil {
         }
     }
 
-    // -----------------------------------------------------------------------
-    //  Undeployed API helpers
-    // -----------------------------------------------------------------------
 
-    /**
-     * Builds a minimal OpenAPI spec for an undeployed proxy.
-     * <p>
-     * The spec has empty servers array so WSO2 dev portal shows no endpoint
-     * instead of crashing with a blank screen.
-     */
-    public static String buildUndeployedOpenAPISpec(String proxyName, Environment environment) {
-        JsonObject spec = new JsonObject();
-        spec.addProperty("openapi", "3.0.1");
-        
-        JsonObject info = new JsonObject();
-        info.addProperty("title", proxyName);
-        info.addProperty("description", "Apigee proxy '" + proxyName + "' is currently NOT DEPLOYED to environment '"
-                + environment.getName() + "'. Deploy the proxy in Apigee to enable API operations.");
-        info.addProperty("version", ApigeeConstants.DEFAULT_VERSION);
-        spec.add("info", info);
-        
-        // Empty servers array indicates no endpoints available
-        spec.add("servers", new JsonArray());
-        
-        // Minimal paths - just a root with info about undeployed state
-        JsonObject paths = new JsonObject();
-        JsonObject rootPath = new JsonObject();
-        JsonObject getOp = new JsonObject();
-        getOp.addProperty("summary", "API not deployed");
-        getOp.addProperty("description", "This API proxy is not currently deployed to the Apigee environment. "
-                + "Deploy the proxy in Apigee to access API operations.");
-        getOp.addProperty("operationId", "undeployed_info");
-        
-        JsonObject responses = new JsonObject();
-        JsonObject response503 = new JsonObject();
-        response503.addProperty("description", "Service unavailable - API not deployed");
-        responses.add("503", response503);
-        getOp.add("responses", responses);
-        
-        rootPath.add("get", getOp);
-        paths.add("/", rootPath);
-        spec.add("paths", paths);
-        
-        // Security schemes
-        JsonObject components = new JsonObject();
-        JsonObject securitySchemes = new JsonObject();
-        JsonObject defaultScheme = new JsonObject();
-        defaultScheme.addProperty("type", "oauth2");
-        JsonObject flows = new JsonObject();
-        JsonObject implicit = new JsonObject();
-        implicit.addProperty("authorizationUrl", "https://localhost:9443/oauth2/authorize");
-        implicit.add("scopes", new JsonObject());
-        flows.add("implicit", implicit);
-        defaultScheme.add("flows", flows);
-        securitySchemes.add("default", defaultScheme);
-        components.add("securitySchemes", securitySchemes);
-        spec.add("components", components);
-        
-        return GSON.toJson(spec);
-    }
 
     /**
      * Builds a wildcard OpenAPI spec when XML reconstruction fails.

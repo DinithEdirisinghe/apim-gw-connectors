@@ -157,41 +157,34 @@ ApigeeFederatedAPIDiscovery implements FederatedAPIDiscovery {
                     String apiDefinition;
                     String basepath;
 
-                    if (deployed) {
-                        // ---------------------------------------------------------------
-                        // DEPLOYED PROXY: Full discovery with actual OpenAPI spec
-                        // ---------------------------------------------------------------
-                        revision = ApigeeAPIUtil.getLatestDeployedRevision(
-                                org, proxyName, apigeeEnvironment, accessToken);
-
-                        // Attempt to retrieve an OpenAPI spec; fall back to a generated stub
-                        apiDefinition = ApigeeAPIUtil.getApiProxyOpenAPISpec(
-                                org, proxyName, revision, environment, accessToken);
-
-                        if (apiDefinition == null) {
-                            log.debug("Skipping proxy '" + proxyName + "' because OpenAPI spec could not be constructed.");
-                            return;
-                        }
-
-                        // Get revision details to extract basepath
-                        JsonObject revisionDetails = ApigeeAPIUtil.getApiProxyRevisionDetails(
-                                org, proxyName, revision, accessToken);
-                        basepath = ApigeeAPIUtil.getProxyBasepath(revisionDetails);
-
-                    } else {
-                        // ---------------------------------------------------------------
-                        // UNDEPLOYED PROXY: Minimal API with empty endpoints
-                        // ---------------------------------------------------------------
-                        // Use revision "0" to indicate undeployed state
-                        revision = "0";
-                        
-                        // Build minimal OpenAPI spec for undeployed proxy
-                        apiDefinition = ApigeeAPIUtil.buildUndeployedOpenAPISpec(
-                                proxyName, environment);
-                        
-                        // Use default basepath
-                        basepath = "/" + proxyName.toLowerCase();
+                    if (!deployed) {
+                        // Skip undeployed proxies — WSO2's FederatedAPIDiscoveryRunner will
+                        // automatically call deleteDeployment for any API that disappears
+                        // from the discovered list, keeping both systems in sync.
+                        log.debug("Skipping proxy '" + proxyName + "' because it is not deployed to environment: "
+                                + apigeeEnvironment);
+                        return;
                     }
+
+                    // ---------------------------------------------------------------
+                    // DEPLOYED PROXY: Full discovery with actual OpenAPI spec
+                    // ---------------------------------------------------------------
+                    revision = ApigeeAPIUtil.getLatestDeployedRevision(
+                            org, proxyName, apigeeEnvironment, accessToken);
+
+                    // Attempt to retrieve an OpenAPI spec; fall back to a generated stub
+                    apiDefinition = ApigeeAPIUtil.getApiProxyOpenAPISpec(
+                            org, proxyName, revision, environment, accessToken);
+
+                    if (apiDefinition == null) {
+                        log.debug("Skipping proxy '" + proxyName + "' because OpenAPI spec could not be constructed.");
+                        return;
+                    }
+
+                    // Get revision details to extract basepath
+                    JsonObject revisionDetails = ApigeeAPIUtil.getApiProxyRevisionDetails(
+                            org, proxyName, revision, accessToken);
+                    basepath = ApigeeAPIUtil.getProxyBasepath(revisionDetails);
 
                     // Get proxy metadata
                     JsonObject proxyMetadata = ApigeeAPIUtil.getApiProxyMetadata(
@@ -200,14 +193,13 @@ ApigeeFederatedAPIDiscovery implements FederatedAPIDiscovery {
                     // Convert to WSO2 API model
                     API api = ApigeeAPIUtil.proxyToAPI(
                             proxyName, proxyMetadata, apiDefinition, organization, environment,
-                            this.apigeeOrganization, basepath, deployed);
-                    
-                    log.debug("Discovered API: '" + api.getId().getApiName() + "' (UUID: " + api.getUuid() 
-                            + ", deployed: " + deployed + ")");
+                            this.apigeeOrganization, basepath, true);
 
-                    // Build reference artifact including deployment status
+                    log.debug("Discovered API: '" + api.getId().getApiName() + "' (UUID: " + api.getUuid() + ")");
+
+                    // Build reference artifact
                     String referenceArtifact = ApigeeAPIUtil.createReferenceArtifact(
-                            proxyName, revision, apiDefinition, deployed);
+                            proxyName, revision, apiDefinition, true);
 
                     DiscoveredAPI discoveredAPI = new DiscoveredAPI(api, referenceArtifact);
                     retrievedAPIs.add(discoveredAPI);
@@ -250,26 +242,27 @@ ApigeeFederatedAPIDiscovery implements FederatedAPIDiscovery {
                     String apiDefinition = "";
                     String basepath;
 
-                    if (deployed) {
-                        revision = ApigeeAPIUtil.getLatestDeployedRevision(
-                                org, proxyName, apigeeEnvironment, accessToken);
-                        JsonObject revisionDetails = ApigeeAPIUtil.getApiProxyRevisionDetails(
-                                org, proxyName, revision, accessToken);
-                        basepath = ApigeeAPIUtil.getProxyBasepath(revisionDetails);
-                    } else {
-                        revision = "0";
-                        basepath = "/" + proxyName.toLowerCase();
+                    if (!deployed) {
+                        log.debug("Skipping proxy '" + proxyName + "' because it is not deployed to environment: "
+                                + apigeeEnvironment);
+                        return;
                     }
+
+                    revision = ApigeeAPIUtil.getLatestDeployedRevision(
+                            org, proxyName, apigeeEnvironment, accessToken);
+                    JsonObject revisionDetails = ApigeeAPIUtil.getApiProxyRevisionDetails(
+                            org, proxyName, revision, accessToken);
+                    basepath = ApigeeAPIUtil.getProxyBasepath(revisionDetails);
 
                     JsonObject proxyMetadata = ApigeeAPIUtil.getApiProxyMetadata(
                             org, proxyName, accessToken);
 
                     API api = ApigeeAPIUtil.proxyToAPI(
                             proxyName, proxyMetadata, apiDefinition, organization, environment,
-                            this.apigeeOrganization, basepath, deployed);
+                            this.apigeeOrganization, basepath, true);
 
                     String referenceArtifact = ApigeeAPIUtil.createReferenceArtifact(
-                            proxyName, revision, apiDefinition, deployed);
+                            proxyName, revision, apiDefinition, true);
 
                     DiscoveredAPI discoveredAPI = new DiscoveredAPI(api, referenceArtifact);
                     retrievedAPIs.add(discoveredAPI);
@@ -317,41 +310,40 @@ ApigeeFederatedAPIDiscovery implements FederatedAPIDiscovery {
                         boolean deployed = ApigeeAPIUtil.isProxyDeployedToEnvironment(
                                 org, proxyName, apigeeEnvironment, accessToken);
 
+                        if (!deployed) {
+                            log.debug("Skipping proxy '" + proxyName
+                                    + "' because it is not deployed to environment: " + apigeeEnvironment);
+                            return;
+                        }
+
                         String revision;
                         String apiDefinition;
                         String basepath;
 
-                        if (deployed) {
-                            revision = ApigeeAPIUtil.getLatestDeployedRevision(
-                                    org, proxyName, apigeeEnvironment, accessToken);
-                            apiDefinition = ApigeeAPIUtil.getApiProxyOpenAPISpec(
-                                    org, proxyName, revision, environment, accessToken);
+                        revision = ApigeeAPIUtil.getLatestDeployedRevision(
+                                org, proxyName, apigeeEnvironment, accessToken);
+                        apiDefinition = ApigeeAPIUtil.getApiProxyOpenAPISpec(
+                                org, proxyName, revision, environment, accessToken);
 
-                            if (apiDefinition == null) {
-                                log.debug("Skipping proxy '" + proxyName
-                                        + "' because OpenAPI spec could not be constructed.");
-                                return;
-                            }
-
-                            JsonObject revisionDetails = ApigeeAPIUtil.getApiProxyRevisionDetails(
-                                    org, proxyName, revision, accessToken);
-                            basepath = ApigeeAPIUtil.getProxyBasepath(revisionDetails);
-                        } else {
-                            revision = "0";
-                            apiDefinition = ApigeeAPIUtil.buildUndeployedOpenAPISpec(
-                                    proxyName, environment);
-                            basepath = "/" + proxyName.toLowerCase();
+                        if (apiDefinition == null) {
+                            log.debug("Skipping proxy '" + proxyName
+                                    + "' because OpenAPI spec could not be constructed.");
+                            return;
                         }
+
+                        JsonObject revisionDetails = ApigeeAPIUtil.getApiProxyRevisionDetails(
+                                org, proxyName, revision, accessToken);
+                        basepath = ApigeeAPIUtil.getProxyBasepath(revisionDetails);
 
                         JsonObject proxyMetadata = ApigeeAPIUtil.getApiProxyMetadata(
                                 org, proxyName, accessToken);
 
                         API api = ApigeeAPIUtil.proxyToAPI(
                                 proxyName, proxyMetadata, apiDefinition, organization, environment,
-                                this.apigeeOrganization, basepath, deployed);
+                                this.apigeeOrganization, basepath, true);
 
                         String referenceArtifact = ApigeeAPIUtil.createReferenceArtifact(
-                                proxyName, revision, apiDefinition, deployed);
+                                proxyName, revision, apiDefinition, true);
 
                         DiscoveredAPI discoveredAPI = new DiscoveredAPI(api, referenceArtifact);
                         retrievedAPIs.add(discoveredAPI);
