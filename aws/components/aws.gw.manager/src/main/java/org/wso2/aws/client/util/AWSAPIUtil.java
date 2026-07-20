@@ -682,16 +682,6 @@ public class AWSAPIUtil {
         }
     }
 
-    /**
-     * Creates a reference artifact by combining a given RestApi object and its Swagger definition in JSON format.
-     *
-     * @param restApi               The RestApi object containing API details.
-     * @param swaggerDefinitionJson The Swagger/OpenAPI definition of the API in JSON format.
-     * @return A JSON string that represents the combined reference artifact.
-     */
-    public static String createReferenceArtifact(RestApi restApi, String swaggerDefinitionJson) {
-        return createReferenceArtifact(restApi, swaggerDefinitionJson, null);
-    }
 
     public static String createReferenceArtifact(RestApi restApi, String swaggerDefinitionJson, String deploymentId) {
         Gson G = new Gson();

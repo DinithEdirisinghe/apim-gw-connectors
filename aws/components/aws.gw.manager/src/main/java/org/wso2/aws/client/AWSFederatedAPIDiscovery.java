@@ -163,7 +163,7 @@ public class AWSFederatedAPIDiscovery implements FederatedAPIDiscovery {
 
     @Override
     public List<DiscoveredAPI> discoverMetadata() {
-        log.info("[LOGGING] AWS Connector: discoverMetadata() called. Fetching metadata for AWS REST APIs in parallel.");
+        log.debug("[LOGGING] AWS Connector: discoverMetadata() called. Fetching metadata for AWS REST APIs in parallel.");
         List<RestApi> restApis = AWSAPIUtil.getRestApis(apiGatewayClient);
         List<DiscoveredAPI> retrievedAPIs = java.util.Collections.synchronizedList(new ArrayList<>());
         
@@ -186,7 +186,7 @@ public class AWSFederatedAPIDiscovery implements FederatedAPIDiscovery {
 
     @Override
     public List<DiscoveredAPI> discoverAPI(List<String> apiIds) {
-        log.info("[LOGGING] AWS Connector: discoverAPI(List<String> apiIds) called in parallel with IDs: " + apiIds);
+        log.debug("[LOGGING] AWS Connector: discoverAPI(List<String> apiIds) called in parallel with IDs: " + apiIds);
         List<RestApi> restApis = AWSAPIUtil.getRestApis(apiGatewayClient);
         List<DiscoveredAPI> retrievedAPIs = java.util.Collections.synchronizedList(new ArrayList<>());
         
@@ -199,7 +199,7 @@ public class AWSFederatedAPIDiscovery implements FederatedAPIDiscovery {
                 if (deploymentId == null) {
                     return;
                 }
-                log.info("[LOGGING] AWS Connector: MATCH FOUND. Fetching full specification (OAS definition) for API ID: " + awsApiId);
+                log.debug("[LOGGING] AWS Connector: MATCH FOUND. Fetching full specification (OAS definition) for API ID: " + awsApiId);
                 String apiDefinition = AWSAPIUtil.getRestApiDefinition(apiGatewayClient, restApi.id(), stage);
                 API api = AWSAPIUtil.restAPItoAPI(restApi, apiDefinition, organization, environment);
                 AWSAPIUtil.setEndpointConfig(api, restApi, apiGatewayClient);
@@ -248,13 +248,17 @@ public class AWSFederatedAPIDiscovery implements FederatedAPIDiscovery {
                 return response.deploymentId();
             }
         } catch (Exception e) {
-            if (e.getClass().getSimpleName().equals("NotFoundException") || 
-                e.getMessage().contains("NotFoundException") || 
-                e.getMessage().contains("not found")) {
+            String message = e.getMessage();
+            boolean isNotFound = e.getClass().getSimpleName().equals("NotFoundException") ||
+                    e instanceof software.amazon.awssdk.services.apigateway.model.NotFoundException ||
+                    (message != null && (message.contains("NotFoundException") || message.contains("not found")));
+            if (isNotFound) {
                 log.debug("Stage '" + stage + "' not found for API: " + apiId);
+                return null;
             } else {
-                log.warn("Could not retrieve stage deployment ID for API: "
-                        + apiId + ", stage: " + stage + ". Error: " + e.getMessage());
+                log.error("Could not retrieve stage deployment ID for API: "
+                        + apiId + ", stage: " + stage + ". Error: " + message, e);
+                throw new RuntimeException("Transient error retrieving stage deployment ID for API " + apiId, e);
             }
         }
         return null;

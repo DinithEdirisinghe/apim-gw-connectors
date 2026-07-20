@@ -79,123 +79,14 @@ public class ApigeeOpenAPISpecBuilder {
                                                Map<String, String> policyXmlMap,
                                                String proxyName,
                                                String apigeeBaseUrl) {
-        // Extract parameters from policies
-        PolicyParameters policyParams = extractParametersFromPolicies(policyXmlMap, proxyName);
-        log.debug("Proxy '" + proxyName + "': extracted " + policyParams.queryParams.size()
-                + " query param(s), " + policyParams.headerParams.size() + " header param(s) from policies.");
+        // Extract parameters per policy
+        Map<String, PolicyParameters> policyToParamsMap = extractParametersFromPolicies(policyXmlMap, proxyName);
 
-        // Parse XML and build spec
-        return buildSpecFromProxyEndpointXml(proxyName, apigeeBaseUrl, proxyEndpointXml, policyParams);
+        // Parse XML and build spec using scoped policy parameters
+        return buildSpecFromProxyEndpointXml(proxyName, apigeeBaseUrl, proxyEndpointXml, policyToParamsMap);
     }
 
-    /**
-     * Builds a minimal wildcard OpenAPI spec for proxies without conditional flows.
-     * This is a fallback when the proxy uses passthrough routing.
-     * 
-     * @param proxyName     Name of the Apigee proxy
-     * @param apigeeBaseUrl Base URL for the API
-     * @return OpenAPI 3.0.1 JSON string with wildcard paths
-     */
-    public static String buildMinimalSpec(String proxyName, String apigeeBaseUrl) {
-        JsonObject spec = new JsonObject();
-        spec.addProperty("openapi", "3.0.1");
 
-        // Info section
-        JsonObject info = new JsonObject();
-        info.addProperty("title", proxyName);
-        info.addProperty("version", "1.0.0");
-        info.addProperty("description", "Auto-generated minimum spec for Apigee proxy: " + proxyName);
-        spec.add("info", info);
-
-        // Servers section
-        JsonArray servers = new JsonArray();
-        JsonObject server = new JsonObject();
-        server.addProperty("url", apigeeBaseUrl);
-        servers.add(server);
-        spec.add("servers", servers);
-
-        // Global security requirement
-        JsonArray globalSecurity = new JsonArray();
-        JsonObject defaultSecurityReq = new JsonObject();
-        defaultSecurityReq.add("default", new JsonArray());
-        globalSecurity.add(defaultSecurityReq);
-        spec.add("security", globalSecurity);
-
-        // Paths section - wildcard for all methods
-        String[] methods = {"get", "put", "post", "delete", "patch"};
-        JsonObject wildcardPathItem = new JsonObject();
-
-        for (String method : methods) {
-            JsonObject op = new JsonObject();
-            op.addProperty("summary", "Proxy " + method.toUpperCase() + " /*");
-            op.addProperty("operationId", method + "_wildcard");
-
-            // Add requestBody for POST, PUT, PATCH operations
-            if ("post".equals(method) || "put".equals(method) || "patch".equals(method)) {
-                JsonObject requestBody = new JsonObject();
-                requestBody.addProperty("description", "Request payload");
-                requestBody.addProperty("required", true);
-
-                JsonObject content = new JsonObject();
-                JsonObject applicationJson = new JsonObject();
-                JsonObject schema = new JsonObject();
-                schema.addProperty("type", "object");
-
-                applicationJson.add("schema", schema);
-                content.add("application/json", applicationJson);
-                requestBody.add("content", content);
-
-                op.add("requestBody", requestBody);
-            }
-
-            // Responses with content
-            JsonObject responses = new JsonObject();
-            JsonObject response200 = new JsonObject();
-            response200.addProperty("description", "Successful response");
-            JsonObject content200 = new JsonObject();
-            JsonObject appJson200 = new JsonObject();
-            JsonObject schema200 = new JsonObject();
-            schema200.addProperty("type", "object");
-            appJson200.add("schema", schema200);
-            content200.add("application/json", appJson200);
-            response200.add("content", content200);
-            responses.add("200", response200);
-            op.add("responses", responses);
-
-            // Security at operation level
-            JsonArray security = new JsonArray();
-            JsonObject defaultSecurity = new JsonObject();
-            defaultSecurity.add("default", new JsonArray());
-            security.add(defaultSecurity);
-            op.add("security", security);
-
-            // WSO2 extensions
-            op.addProperty("x-auth-type", "Application & Application User");
-            op.addProperty("x-throttling-tier", "Unlimited");
-
-            // WSO2 application security
-            JsonObject appSecurity = new JsonObject();
-            JsonArray securityTypes = new JsonArray();
-            securityTypes.add("api_key");
-            appSecurity.add("security-types", securityTypes);
-            appSecurity.addProperty("optional", false);
-            op.add("x-wso2-application-security", appSecurity);
-
-            wildcardPathItem.add(method, op);
-        }
-
-        JsonObject paths = new JsonObject();
-        paths.add("/*", wildcardPathItem);
-        spec.add("paths", paths);
-
-        // Components section (security schemes)
-        spec.add("components", buildComponents());
-
-        // WSO2 basePath
-        spec.addProperty("x-wso2-basePath", "/" + proxyName + "/1.0.0");
-
-        return GSON.toJson(spec);
-    }
 
     // -----------------------------------------------------------------------
     //  Policy parameter extraction
@@ -204,13 +95,13 @@ public class ApigeeOpenAPISpecBuilder {
     /**
      * Extracts query parameters and header parameters from Apigee policy XML files.
      */
-    private static PolicyParameters extractParametersFromPolicies(Map<String, String> policyXmlMap,
-                                                                   String proxyName) {
-        PolicyParameters params = new PolicyParameters();
+    private static Map<String, PolicyParameters> extractParametersFromPolicies(Map<String, String> policyXmlMap,
+                                                                               String proxyName) {
+        Map<String, PolicyParameters> policyToParamsMap = new java.util.LinkedHashMap<>();
 
         if (policyXmlMap == null || policyXmlMap.isEmpty()) {
             log.debug("No policy files found for proxy '" + proxyName + "'.");
-            return params;
+            return policyToParamsMap;
         }
 
         javax.xml.parsers.DocumentBuilderFactory dbf =
@@ -224,6 +115,7 @@ public class ApigeeOpenAPISpecBuilder {
         for (Map.Entry<String, String> entry : policyXmlMap.entrySet()) {
             String policyName = entry.getKey();
             String policyXml = entry.getValue();
+            PolicyParameters params = new PolicyParameters();
 
             try {
                 javax.xml.parsers.DocumentBuilder db = dbf.newDocumentBuilder();
@@ -244,12 +136,13 @@ public class ApigeeOpenAPISpecBuilder {
                     extractFromAssignMessagePolicy(doc, params, policyName);
                 }
 
+                policyToParamsMap.put(policyName, params);
             } catch (Exception e) {
                 log.warn("Failed to parse policy XML '" + policyName + "': " + e.getMessage());
             }
         }
 
-        return params;
+        return policyToParamsMap;
     }
 
     /**
@@ -394,8 +287,10 @@ public class ApigeeOpenAPISpecBuilder {
     private static String buildSpecFromProxyEndpointXml(String proxyName,
                                                          String apigeeBaseUrl,
                                                          String xml,
-                                                         PolicyParameters policyParams) {
+                                                         Map<String, PolicyParameters> policyToParamsMap) {
         Map<String, Set<String>> pathVerbMap = new LinkedHashMap<>();
+        Map<String, Set<String>> flowPoliciesMap = new LinkedHashMap<>();
+        Set<String> globalPolicies = new LinkedHashSet<>();
 
         try {
             javax.xml.parsers.DocumentBuilderFactory dbf =
@@ -406,6 +301,16 @@ public class ApigeeOpenAPISpecBuilder {
                     new java.io.ByteArrayInputStream(
                             xml.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
             doc.getDocumentElement().normalize();
+
+            // Extract globally executed policies (PreFlow and PostFlow)
+            NodeList preFlows = doc.getElementsByTagName("PreFlow");
+            for (int i = 0; i < preFlows.getLength(); i++) {
+                globalPolicies.addAll(getReferencedPoliciesInElement((Element) preFlows.item(i)));
+            }
+            NodeList postFlows = doc.getElementsByTagName("PostFlow");
+            for (int i = 0; i < postFlows.getLength(); i++) {
+                globalPolicies.addAll(getReferencedPoliciesInElement((Element) postFlows.item(i)));
+            }
 
             NodeList flows = doc.getElementsByTagName("Flow");
             log.debug("Proxy '" + proxyName + "': found " + flows.getLength()
@@ -437,13 +342,20 @@ public class ApigeeOpenAPISpecBuilder {
                 if (verb == null) {
                     verb = "GET";
                 }
+                verb = verb.toLowerCase();
 
                 String oasPath = ApigeeConditionParser.toOpenAPIPath(rawPath);
                 log.debug("Proxy '" + proxyName + "': mapped condition [" + condition
-                        + "] → " + verb + " " + oasPath);
+                        + "] -> " + verb + " " + oasPath);
                 pathVerbMap
                         .computeIfAbsent(oasPath, k -> new LinkedHashSet<>())
-                        .add(verb.toLowerCase());
+                        .add(verb);
+
+                Set<String> flowPolicies = getReferencedPoliciesInElement(flow);
+                String key = oasPath + ":" + verb;
+                flowPoliciesMap
+                        .computeIfAbsent(key, k -> new LinkedHashSet<>())
+                        .addAll(flowPolicies);
             }
         } catch (Exception e) {
             log.warn("Failed to parse proxy endpoint XML for '" + proxyName
@@ -494,7 +406,21 @@ public class ApigeeOpenAPISpecBuilder {
                 pathItem.add("parameters", buildPathParameters(pathParams));
             }
             for (String verb : verbs) {
-                pathItem.add(verb, buildOperation(proxyName, oasPath, verb, pathParams, policyParams));
+                Set<String> flowPolicies = flowPoliciesMap.getOrDefault(
+                        oasPath + ":" + verb, new LinkedHashSet<>());
+                Set<String> allReferencedPolicies = new LinkedHashSet<>(globalPolicies);
+                allReferencedPolicies.addAll(flowPolicies);
+
+                PolicyParameters operationParams = new PolicyParameters();
+                for (String policyName : allReferencedPolicies) {
+                    PolicyParameters pParams = policyToParamsMap.get(policyName);
+                    if (pParams != null) {
+                        operationParams.queryParams.addAll(pParams.queryParams);
+                        operationParams.headerParams.addAll(pParams.headerParams);
+                    }
+                }
+
+                pathItem.add(verb, buildOperation(proxyName, oasPath, verb, pathParams, operationParams));
             }
             paths.add(oasPath, pathItem);
         }
@@ -509,6 +435,25 @@ public class ApigeeOpenAPISpecBuilder {
         log.debug("Reconstructed OpenAPI spec for proxy '" + proxyName
                 + "' with " + pathVerbMap.size() + " path(s): " + pathVerbMap.keySet());
         return GSON.toJson(spec);
+    }
+
+    private static Set<String> getReferencedPoliciesInElement(Element parent) {
+        Set<String> policies = new LinkedHashSet<>();
+        if (parent == null) {
+            return policies;
+        }
+        NodeList steps = parent.getElementsByTagName("Step");
+        for (int i = 0; i < steps.getLength(); i++) {
+            Element step = (Element) steps.item(i);
+            NodeList names = step.getElementsByTagName("Name");
+            if (names.getLength() > 0) {
+                String name = names.item(0).getTextContent();
+                if (name != null) {
+                    policies.add(name.trim());
+                }
+            }
+        }
+        return policies;
     }
 
     // -----------------------------------------------------------------------

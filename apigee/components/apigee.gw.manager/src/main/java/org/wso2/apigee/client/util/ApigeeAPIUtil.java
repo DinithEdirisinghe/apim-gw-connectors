@@ -88,9 +88,10 @@ public class ApigeeAPIUtil {
         try {
             responseBody = executeGet(url, accessToken);
         } catch (Exception e) {
-            log.warn("Network error listing Apigee proxies for org '" + org
-                    + "'; returning empty list: " + e.getMessage());
-            return new ArrayList<>();
+            // Throw instead of returning empty — a transient error here must not cause WSO2 to
+            // treat every previously-imported API as deleted and call deleteDeployment on them.
+            throw new APIManagementException(
+                    "Network error listing Apigee proxies for org '" + org + "': " + e.getMessage(), e);
         }
         List<String> names = new ArrayList<>();
 
@@ -120,9 +121,11 @@ public class ApigeeAPIUtil {
         try {
             responseBody = executeGet(url, accessToken);
         } catch (Exception e) {
-            log.warn("Network error checking deployment for proxy '" + proxyName
-                    + "'; treating as undeployed: " + e.getMessage());
-            return false;
+            // Throw instead of returning false — treating a network failure as "undeployed"
+            // would cause the proxy to be silently excluded from the discovery result,
+            // which triggers WSO2 to call deleteDeployment on it.
+            throw new APIManagementException(
+                    "Network error checking deployment for proxy '" + proxyName + "': " + e.getMessage(), e);
         }
         JsonObject json = JsonParser.parseString(responseBody).getAsJsonObject();
 
@@ -154,9 +157,7 @@ public class ApigeeAPIUtil {
         try {
             responseBody = executeGet(url, accessToken);
         } catch (Exception e) {
-            log.warn("Network error fetching revision for proxy '" + proxyName
-                    + "'; defaulting to revision 1: " + e.getMessage());
-            return "1";
+            throw new APIManagementException("Network error fetching revision for proxy '" + proxyName + "'", e);
         }
         JsonObject json = JsonParser.parseString(responseBody).getAsJsonObject();
 
@@ -176,8 +177,7 @@ public class ApigeeAPIUtil {
                 return latestRevision;
             }
         }
-        // Fallback — return "1" (first revision)
-        return "1";
+        throw new APIManagementException("No active revisions found in deployments for proxy '" + proxyName + "'");
     }
 
     /**
@@ -315,7 +315,15 @@ public class ApigeeAPIUtil {
 
             if (json.has("apis") && json.get("apis").isJsonArray()) {
                 JsonArray apis = json.getAsJsonArray("apis");
-                if (apis.size() > 0) {
+                if (apis.size() > 1) {
+                    // Ambiguous: multiple API Hub entries share the same display_name.
+                    // Picking the first one arbitrarily could link the wrong spec to this proxy,
+                    // so we bail out and let the proxy bundle fallback handle spec generation.
+                    log.warn("API Hub returned " + apis.size() + " entries with display_name=\"" + proxyName
+                            + "\". Cannot determine the correct spec — falling back to proxy bundle reconstruction.");
+                    return null;
+                }
+                if (apis.size() == 1) {
                     JsonObject api = apis.get(0).getAsJsonObject();
                     if (api.has("name")) {
                         String fullName = api.get("name").getAsString();
@@ -329,6 +337,7 @@ public class ApigeeAPIUtil {
         }
         return null;
     }
+
 
     /**
      * Gets the latest version for an API in API Hub.
@@ -351,7 +360,16 @@ public class ApigeeAPIUtil {
             if (json.has("versions") && json.get("versions").isJsonArray()) {
                 JsonArray versions = json.getAsJsonArray("versions");
                 if (versions.size() > 0) {
-                    JsonObject version = versions.get(0).getAsJsonObject();
+                    List<JsonObject> versionList = new ArrayList<>();
+                    for (int i = 0; i < versions.size(); i++) {
+                        versionList.add(versions.get(i).getAsJsonObject());
+                    }
+                    versionList.sort((v1, v2) -> {
+                        String t1 = v1.has("createTime") ? v1.get("createTime").getAsString() : "";
+                        String t2 = v2.has("createTime") ? v2.get("createTime").getAsString() : "";
+                        return t2.compareTo(t1);
+                    });
+                    JsonObject version = versionList.get(0);
                     if (version.has("name")) {
                         String fullName = version.get("name").getAsString();
                         String versionUuid = extractResourceId(fullName);
@@ -387,7 +405,16 @@ public class ApigeeAPIUtil {
             if (json.has("specs") && json.get("specs").isJsonArray()) {
                 JsonArray specs = json.getAsJsonArray("specs");
                 if (specs.size() > 0) {
-                    JsonObject spec = specs.get(0).getAsJsonObject();
+                    List<JsonObject> specList = new ArrayList<>();
+                    for (int i = 0; i < specs.size(); i++) {
+                        specList.add(specs.get(i).getAsJsonObject());
+                    }
+                    specList.sort((s1, s2) -> {
+                        String t1 = s1.has("createTime") ? s1.get("createTime").getAsString() : "";
+                        String t2 = s2.has("createTime") ? s2.get("createTime").getAsString() : "";
+                        return t2.compareTo(t1);
+                    });
+                    JsonObject spec = specList.get(0);
                     if (spec.has("name")) {
                         return spec.get("name").getAsString();
                     }
@@ -576,9 +603,7 @@ public class ApigeeAPIUtil {
             String responseBody = executeGet(url, accessToken);
             return JsonParser.parseString(responseBody).getAsJsonObject();
         } catch (Exception e) {
-            log.warn("Network error fetching metadata for proxy '" + proxyName
-                    + "'; returning empty metadata: " + e.getMessage());
-            return new JsonObject();
+            throw new APIManagementException("Network error fetching metadata for proxy '" + proxyName + "'", e);
         }
     }
 
@@ -595,8 +620,8 @@ public class ApigeeAPIUtil {
             String responseBody = executeGet(url, accessToken);
             return JsonParser.parseString(responseBody).getAsJsonObject();
         } catch (Exception e) {
-            log.debug("Could not fetch revision details for proxy '" + proxyName + "' revision " + revision);
-            return new JsonObject();
+            throw new APIManagementException("Could not fetch revision details for proxy '" + proxyName
+                    + "' revision " + revision, e);
         }
     }
 
@@ -681,7 +706,7 @@ public class ApigeeAPIUtil {
         api.setContextTemplate("/" + proxyName.toLowerCase().replace(" ", "-"));
         api.setOrganization(organization);
 
-        api.setSwaggerDefinition(normalizeOpenApiTitle(apiDefinition, proxyName));
+        api.setSwaggerDefinition(apiDefinition);
         api.setRevision(false);
         api.setLastUpdated(new Date());
         api.setCreatedTime(Long.toString(System.currentTimeMillis()));
@@ -761,8 +786,37 @@ public class ApigeeAPIUtil {
         ref.addProperty("proxyName", proxyName);
         ref.addProperty("revision", revision);
         ref.addProperty("deployed", deployed);
-        ref.addProperty("specHash", String.valueOf(apiDefinition != null ? apiDefinition.hashCode() : 0));
+
+        boolean isMetadataOnly = (apiDefinition == null || apiDefinition.isEmpty());
+        boolean isFallback = (apiDefinition != null && apiDefinition.contains("Wildcard API for Apigee proxy"));
+
+        ref.addProperty("isMetadataOnly", isMetadataOnly);
+        ref.addProperty("isFallback", isFallback);
+        ref.addProperty("specHash", getSha256Hash(apiDefinition));
+
         return GSON.toJson(ref);
+    }
+
+    private static String getSha256Hash(String input) {
+        if (input == null || input.isEmpty()) {
+            return "0";
+        }
+        try {
+            java.security.MessageDigest digest = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] hash = digest.digest(input.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            StringBuilder hexString = new StringBuilder();
+            for (byte b : hash) {
+                String hex = Integer.toHexString(0xff & b);
+                if (hex.length() == 1) {
+                    hexString.append('0');
+                }
+                hexString.append(hex);
+            }
+            return hexString.toString();
+        } catch (Exception e) {
+            log.warn("Failed to compute SHA-256 hash: " + e.getMessage());
+            return String.valueOf(input.hashCode());
+        }
     }
 
     /**

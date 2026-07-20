@@ -147,7 +147,8 @@ public class AzureFederatedAPIDiscovery implements FederatedAPIDiscovery {
 
     @Override
     public List<DiscoveredAPI> discoverMetadata() {
-        log.info("[LOGGING] Azure Connector: discoverMetadata() called. Fetching metadata for Azure APIs in parallel.");
+        log.debug("[LOGGING] Azure Connector: discoverMetadata() called. "
+                + "Fetching metadata for Azure APIs in parallel.");
         PagedIterable<ApiContract> apis = manager.apis()
                 .listByService(resourceGroup, serviceName, "isCurrent eq true",
                         null, /* top */
@@ -185,7 +186,8 @@ public class AzureFederatedAPIDiscovery implements FederatedAPIDiscovery {
 
     @Override
     public List<DiscoveredAPI> discoverAPI(List<String> apiIds) {
-        log.info("[LOGGING] Azure Connector: discoverAPI(List<String> apiIds) called in parallel with IDs: " + apiIds);
+        log.debug("[LOGGING] Azure Connector: discoverAPI(List<String> apiIds) "
+                + "called in parallel with IDs: " + apiIds);
         PagedIterable<ApiContract> apis = manager.apis()
                 .listByService(resourceGroup, serviceName, "isCurrent eq true",
                         null, /* top */
@@ -205,7 +207,7 @@ public class AzureFederatedAPIDiscovery implements FederatedAPIDiscovery {
                 String compositeKey = api.displayName() + ":" + version;
 
                 if (apiIds.contains(deterministicUuid) || apiIds.contains(compositeKey)) {
-                    log.info("[LOGGING] Azure Connector: MATCH FOUND. "
+                    log.debug("[LOGGING] Azure Connector: MATCH FOUND. "
                             + "Fetching spec for Azure API: " + api.name());
                     // Get API Definition only if it is in the requested apiIds
                     String apiDefinition = AzureAPIUtil.getRestApiDefinition(manager, httpClient, api);

@@ -249,8 +249,14 @@ public class AzureAPIUtil {
                     AzureConstants.AZURE_EXTERNAL_REFERENCE_VERSIONING_SCHEME,
                     versionSetContract.versioningScheme().toString());
         }
+        long createdTime = 0L;
+        if (apiRevisionContract != null && apiRevisionContract.createdDateTime() != null) {
+            createdTime = apiRevisionContract.createdDateTime().toInstant().toEpochMilli();
+        } else {
+            createdTime = System.currentTimeMillis();
+        }
         referenceArtifact.addProperty(AzureConstants.AZURE_EXTERNAL_REFERENCE_CREATED_TIME_EPOCH,
-                apiRevisionContract.createdDateTime().toInstant().toEpochMilli());
+                createdTime);
         Gson gson = new Gson();
         return gson.toJson(referenceArtifact);
     }

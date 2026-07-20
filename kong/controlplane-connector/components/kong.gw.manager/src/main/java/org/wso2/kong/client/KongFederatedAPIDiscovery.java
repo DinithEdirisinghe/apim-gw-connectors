@@ -113,7 +113,7 @@ public class KongFederatedAPIDiscovery implements FederatedAPIDiscovery {
 
     @Override
     public List<DiscoveredAPI> discoverAPI() {
-        log.info("[LOGGING] Kong Connector: discoverAPI() called. Fetching all Kong APIs with full spec.");
+        log.debug("[LOGGING] Kong Connector: discoverAPI() called. Fetching all Kong APIs with full spec.");
         if (!Objects.equals(deploymentType, KongConstants.KONG_KUBERNETES_DEPLOYMENT)) {
             try {
                 // List APIs (V3)
@@ -179,7 +179,7 @@ public class KongFederatedAPIDiscovery implements FederatedAPIDiscovery {
 
     @Override
     public List<DiscoveredAPI> discoverMetadata() {
-        log.info("[LOGGING] Kong Connector: discoverMetadata() called. Fetching metadata for Kong APIs.");
+        log.debug("[LOGGING] Kong Connector: discoverMetadata() called. Fetching metadata for Kong APIs.");
         if (!Objects.equals(deploymentType, KongConstants.KONG_KUBERNETES_DEPLOYMENT)) {
             try {
                 // List APIs (V3)
@@ -239,7 +239,10 @@ public class KongFederatedAPIDiscovery implements FederatedAPIDiscovery {
 
     @Override
     public List<DiscoveredAPI> discoverAPI(List<String> apiIds) {
-        log.info("[LOGGING] Kong Connector: discoverAPI(List<String> apiIds) called with IDs: " + apiIds);
+        log.debug("[LOGGING] Kong Connector: discoverAPI(List<String> apiIds) called with IDs: " + apiIds);
+        if (apiIds == null) {
+            return Collections.emptyList();
+        }
         if (!Objects.equals(deploymentType, KongConstants.KONG_KUBERNETES_DEPLOYMENT)) {
             try {
                 // List APIs (V3)
@@ -264,11 +267,18 @@ public class KongFederatedAPIDiscovery implements FederatedAPIDiscovery {
                 List<DiscoveredAPI> retrievedAPIs = java.util.Collections.synchronizedList(new ArrayList<>());
                 Set<String> linkedServices = java.util.Collections.synchronizedSet(new HashSet<>());
 
+                // Pre-populate linkedServices to prevent service double-discovery
+                for (KongAPIImplementation.ServiceLink link : apiToSvc.values()) {
+                    if (link.getId() != null) {
+                        linkedServices.add(link.getId());
+                    }
+                }
+
                 // Iterate APIs in parallel, only fetching spec for matched API IDs
                 apis.parallelStream().forEach(kongAPI -> {
                     String compositeKey = kongAPI.getName() + ":" + kongAPI.getVersion();
                     if (apiIds.contains(kongAPI.getId()) || apiIds.contains(compositeKey)) {
-                        log.info("[LOGGING] Kong Connector: MATCH FOUND. Fetching spec for Kong API ID: "
+                        log.debug("[LOGGING] Kong Connector: MATCH FOUND. Fetching spec for Kong API ID: "
                                 + kongAPI.getId());
                         DiscoveredAPI dApi = processKongAPI(kongAPI, apiToSvc, linkedServices, true);
                         if (dApi != null) {
@@ -351,10 +361,27 @@ public class KongFederatedAPIDiscovery implements FederatedAPIDiscovery {
                     }
                 }
                 if (oas == null || oas.trim().isEmpty()) {
-                    oas = "{\"openapi\": \"3.0.1\", \"info\": {\"title\": \"" + apiName 
-                            + "\", \"version\": \"" + apiVersion + "\"}, \"paths\": {\"/*\": " 
-                            + "{\"get\": {\"responses\": {\"200\": {\"description\": " 
-                            + "\"Default Response\"}}}}}}";
+                    com.google.gson.JsonObject oasObj = new com.google.gson.JsonObject();
+                    oasObj.addProperty("openapi", "3.0.1");
+
+                    com.google.gson.JsonObject infoObj = new com.google.gson.JsonObject();
+                    infoObj.addProperty("title", apiName);
+                    infoObj.addProperty("version", apiVersion);
+                    oasObj.add("info", infoObj);
+
+                    com.google.gson.JsonObject pathsObj = new com.google.gson.JsonObject();
+                    com.google.gson.JsonObject slashObj = new com.google.gson.JsonObject();
+                    com.google.gson.JsonObject getObj = new com.google.gson.JsonObject();
+                    com.google.gson.JsonObject responsesObj = new com.google.gson.JsonObject();
+                    com.google.gson.JsonObject r200Obj = new com.google.gson.JsonObject();
+                    r200Obj.addProperty("description", "Default Response");
+                    responsesObj.add("200", r200Obj);
+                    getObj.add("responses", responsesObj);
+                    slashObj.add("get", getObj);
+                    pathsObj.add("/*", slashObj);
+                    oasObj.add("paths", pathsObj);
+
+                    oas = new com.google.gson.Gson().toJson(oasObj);
                 }
             } else {
                 oas = "";
@@ -439,12 +466,14 @@ public class KongFederatedAPIDiscovery implements FederatedAPIDiscovery {
             String svcUpdated = svc.getUpdatedAt() != null ? String.valueOf(svc.getUpdatedAt()) : "0";
             hashInput.append("svc:").append(svc.getId()).append(":").append(svcUpdated).append("|");
 
-            routes.stream().sorted(java.util.Comparator.comparing(KongRoute::getId)).forEach(r -> {
+            routes.stream().filter(r -> r != null && r.getId() != null)
+                    .sorted(java.util.Comparator.comparing(KongRoute::getId)).forEach(r -> {
                 String rtUpdated = r.getUpdatedAt() != null ? String.valueOf(r.getUpdatedAt()) : "0";
                 hashInput.append("rt:").append(r.getId()).append(":").append(rtUpdated).append("|");
             });
 
-            plugins.stream().sorted(java.util.Comparator.comparing(KongPlugin::getId)).forEach(p -> {
+            plugins.stream().filter(p -> p != null && p.getId() != null)
+                    .sorted(java.util.Comparator.comparing(KongPlugin::getId)).forEach(p -> {
                 String plUpdated = p.getUpdatedAt() != null ? String.valueOf(p.getUpdatedAt()) : "0";
                 hashInput.append("pl:").append(p.getId()).append(":").append(plUpdated).append("|");
             });
@@ -458,6 +487,7 @@ public class KongFederatedAPIDiscovery implements FederatedAPIDiscovery {
     }
 
     private DiscoveredAPI processKongService(KongService svc) {
+        String svcName = svc.getName() != null ? svc.getName() : svc.getId();
         try {
             PagedResponse<KongRoute> resp = apiGatewayClient.listRoutesByServiceId(
                     controlPlaneId, svc.getId(), KongConstants.DEFAULT_ROUTE_LIST_LIMIT);
@@ -469,12 +499,12 @@ public class KongFederatedAPIDiscovery implements FederatedAPIDiscovery {
             List<KongPlugin> plugins = (pluginsResp != null && pluginsResp.getData() != null)
                     ? pluginsResp.getData() : java.util.Collections.<KongPlugin>emptyList();
 
-            APIIdentifier apiId = new APIIdentifier(KongConstants.DEFAULT_API_PROVIDER, svc.getName(),
+            APIIdentifier apiId = new APIIdentifier(KongConstants.DEFAULT_API_PROVIDER, svcName,
                     KongConstants.DEFAULT_API_VERSION);
             API api = new API(apiId);
-            api.setDisplayName(svc.getName());
-            api.setContext(svc.getName());
-            api.setContextTemplate(svc.getName().toLowerCase().replace(" ", "-"));
+            api.setDisplayName(svcName);
+            api.setContext(svcName);
+            api.setContextTemplate(svcName.toLowerCase().replace(" ", "-"));
             api.setUuid(svc.getId());
             api.setDescription("");
             api.setOrganization(organization);
@@ -539,12 +569,14 @@ public class KongFederatedAPIDiscovery implements FederatedAPIDiscovery {
             String svcUpdated = svc.getUpdatedAt() != null ? String.valueOf(svc.getUpdatedAt()) : "0";
             hashInput.append("svc:").append(svc.getId()).append(":").append(svcUpdated).append("|");
 
-            routes.stream().sorted(java.util.Comparator.comparing(KongRoute::getId)).forEach(r -> {
+            routes.stream().filter(r -> r != null && r.getId() != null)
+                    .sorted(java.util.Comparator.comparing(KongRoute::getId)).forEach(r -> {
                 String rtUpdated = r.getUpdatedAt() != null ? String.valueOf(r.getUpdatedAt()) : "0";
                 hashInput.append("rt:").append(r.getId()).append(":").append(rtUpdated).append("|");
             });
 
-            plugins.stream().sorted(java.util.Comparator.comparing(KongPlugin::getId)).forEach(p -> {
+            plugins.stream().filter(p -> p != null && p.getId() != null)
+                    .sorted(java.util.Comparator.comparing(KongPlugin::getId)).forEach(p -> {
                 String plUpdated = p.getUpdatedAt() != null ? String.valueOf(p.getUpdatedAt()) : "0";
                 hashInput.append("pl:").append(p.getId()).append(":").append(plUpdated).append("|");
             });
@@ -552,7 +584,7 @@ public class KongFederatedAPIDiscovery implements FederatedAPIDiscovery {
             String compositeHash = KongAPIUtil.sha256Hex(hashInput.toString());
             return new DiscoveredAPI(api, KongAPIUtil.createReferenceArtifact(svc.getId(), compositeHash));
         } catch (Exception e) {
-            log.error("Error processing service: " + svc.getName(), e);
+            log.error("Error processing service: " + svcName, e);
             return null;
         }
     }
@@ -568,16 +600,11 @@ public class KongFederatedAPIDiscovery implements FederatedAPIDiscovery {
             com.google.gson.JsonObject newJson = com.google.gson.JsonParser
                     .parseString(newReferenceArtifact).getAsJsonObject();
 
-            if (existingJson.has("configHash") && newJson.has("configHash")) {
+            if (existingJson.has("configHash") && !existingJson.get("configHash").isJsonNull() &&
+                    newJson.has("configHash") && !newJson.get("configHash").isJsonNull()) {
                 String existingHash = existingJson.get("configHash").getAsString();
                 String newHash = newJson.get("configHash").getAsString();
                 return !existingHash.equals(newHash);
-            }
-
-            if (existingJson.has("lastUpdated") && newJson.has("lastUpdated")) {
-                String existingLastUpdated = existingJson.get("lastUpdated").getAsString();
-                String newLastUpdated = newJson.get("lastUpdated").getAsString();
-                return !existingLastUpdated.equals(newLastUpdated);
             }
         } catch (Exception e) {
             log.error("Error parsing Kong reference artifact", e);

@@ -48,7 +48,7 @@ public class ApigeeConditionParser {
      * Note: Apigee allows both double and single quotes, and multiple comparison operators
      */
     private static final Pattern REQUEST_VERB_PATTERN =
-            Pattern.compile("request\\.verb\\s*(?:=|equals|==)\\s+[\"']([^\"']+)[\"']",
+            Pattern.compile("request\\.verb\\s*(?:=|equals|==)\\s*[\"']([^\"']+)[\"']",
                     Pattern.CASE_INSENSITIVE);
 
     /**

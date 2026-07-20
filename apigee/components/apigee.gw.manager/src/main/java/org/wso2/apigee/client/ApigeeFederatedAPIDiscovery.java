@@ -112,7 +112,10 @@ ApigeeFederatedAPIDiscovery implements FederatedAPIDiscovery {
             // Prepare deployment config object reused when building DiscoveredAPI instances
             this.deploymentConfigObject = new JsonObject();
             deploymentConfigObject.addProperty(DEPLOYMENT_NAME, environment.getName());
-            deploymentConfigObject.addProperty(DEPLOYMENT_VHOST, environment.getVhosts().get(0).getHost());
+            String vhost = (environment.getVhosts() != null && !environment.getVhosts().isEmpty())
+                    ? environment.getVhosts().get(0).getHost()
+                    : "";
+            deploymentConfigObject.addProperty(DEPLOYMENT_VHOST, vhost);
             deploymentConfigObject.addProperty(DISPLAY_ON_DEVPORTAL_OPTION, true);
 
             log.debug("Initialization completed for Apigee Federated API Discovery, org=" + org + ", env=" + env);
@@ -168,14 +171,14 @@ ApigeeFederatedAPIDiscovery implements FederatedAPIDiscovery {
 
     @Override
     public List<DiscoveredAPI> discoverMetadata() {
-        log.info("[LOGGING] Apigee Connector: discoverMetadata() called. Fetching metadata for Apigee API proxies in parallel.");
+        log.debug("[LOGGING] Apigee Connector: discoverMetadata() called. Fetching metadata for Apigee API proxies in parallel.");
         List<DiscoveredAPI> retrievedAPIs = java.util.Collections.synchronizedList(new ArrayList<>());
         try {
             try {
                 credentials.refreshIfExpired();
             } catch (Exception e) {
                 log.warn("Could not refresh GCP credentials (network issue?); "
-                        + "skipping discovery cycle: " + e.getMessage());
+                         + "skipping discovery cycle: " + e.getMessage());
                 return retrievedAPIs;
             }
             String accessToken = credentials.getAccessToken().getTokenValue();
@@ -192,7 +195,7 @@ ApigeeFederatedAPIDiscovery implements FederatedAPIDiscovery {
                     }
                 } catch (Exception e) {
                     log.error("Error discovering Apigee proxy metadata '"
-                            + proxyName + "': " + e.getMessage(), e);
+                              + proxyName + "': " + e.getMessage(), e);
                 }
             });
         } catch (Exception e) {
@@ -204,14 +207,14 @@ ApigeeFederatedAPIDiscovery implements FederatedAPIDiscovery {
 
     @Override
     public List<DiscoveredAPI> discoverAPI(List<String> apiIds) {
-        log.info("[LOGGING] Apigee Connector: discoverAPI(List<String> apiIds) called with IDs: " + apiIds);
+        log.debug("[LOGGING] Apigee Connector: discoverAPI(List<String> apiIds) called with IDs: " + apiIds);
         List<DiscoveredAPI> retrievedAPIs = java.util.Collections.synchronizedList(new ArrayList<>());
         try {
             try {
                 credentials.refreshIfExpired();
             } catch (Exception e) {
                 log.warn("Could not refresh GCP credentials (network issue?); "
-                        + "skipping discovery cycle: " + e.getMessage());
+                         + "skipping discovery cycle: " + e.getMessage());
                 return retrievedAPIs;
             }
             String accessToken = credentials.getAccessToken().getTokenValue();
@@ -229,7 +232,7 @@ ApigeeFederatedAPIDiscovery implements FederatedAPIDiscovery {
                     String compositeKey = proxyName + ":" + ApigeeConstants.DEFAULT_VERSION;
 
                     if (apiIds.contains(deterministicUuid) || apiIds.contains(compositeKey)) {
-                        log.info("[LOGGING] Apigee Connector: MATCH FOUND. Fetching full specification (OAS definition) for Apigee proxy: " + proxyName);
+                        log.debug("[LOGGING] Apigee Connector: MATCH FOUND. Fetching full specification (OAS definition) for Apigee proxy: " + proxyName);
                         DiscoveredAPI discoveredAPI = processProxy(org, proxyName, accessToken, true);
                         if (discoveredAPI != null) {
                             retrievedAPIs.add(discoveredAPI);
@@ -291,10 +294,6 @@ ApigeeFederatedAPIDiscovery implements FederatedAPIDiscovery {
             apiDefinition = ApigeeAPIUtil.getApiProxyOpenAPISpec(
                     org, proxyName, revision, environment, accessToken);
 
-            if (apiDefinition == null) {
-                log.debug("Skipping proxy '" + proxyName + "' because OpenAPI spec could not be constructed.");
-                return null;
-            }
         }
 
         // Get revision details to extract basepath
@@ -346,14 +345,43 @@ ApigeeFederatedAPIDiscovery implements FederatedAPIDiscovery {
                     return true;
                 }
 
-                // If both have valid specHash (i.e. not "0"), we can also compare specHash
-                if (existingJson.has("specHash") && newJson.has("specHash")) {
-                    String existingHash = existingJson.get("specHash").getAsString();
-                    String newHash = newJson.get("specHash").getAsString();
-                    if (!"0".equals(existingHash) && !"0".equals(newHash)) {
-                        return !existingHash.equals(newHash);
-                    }
+                // Retrieve flags, defaulting to false if missing (for backward compatibility)
+                boolean existingIsMetadataOnly = existingJson.has("isMetadataOnly")
+                        && existingJson.get("isMetadataOnly").getAsBoolean();
+                boolean newIsMetadataOnly = newJson.has("isMetadataOnly")
+                        && newJson.get("isMetadataOnly").getAsBoolean();
+
+                boolean existingIsFallback = existingJson.has("isFallback")
+                        && existingJson.get("isFallback").getAsBoolean();
+                boolean newIsFallback = newJson.has("isFallback")
+                        && newJson.get("isFallback").getAsBoolean();
+
+                // 1. If the new scan has no spec (metadata-only discovery), keep the existing spec in WSO2
+                if (newIsMetadataOnly) {
+                    return false;
                 }
+
+                String existingHash = existingJson.has("specHash")
+                        ? existingJson.get("specHash").getAsString() : "0";
+                String newHash = newJson.has("specHash")
+                        ? newJson.get("specHash").getAsString() : "0";
+
+                // 2. If the existing artifact had no spec but the new artifact has a spec, trigger import
+                if ((existingIsMetadataOnly || "0".equals(existingHash)) && !newIsMetadataOnly) {
+                    return true;
+                }
+
+                // 3. If the new spec is a wildcard fallback but the existing spec was a real spec,
+                // do not overwrite the real spec (prevents network drops from destroying specs)
+                if (newIsFallback && !existingIsFallback && !existingIsMetadataOnly) {
+                    return false;
+                }
+
+                // 4. Compare hashes
+                if (!existingHash.equals(newHash)) {
+                    return true;
+                }
+
                 return false;
             }
             return !existingReferenceArtifact.equals(newReferenceArtifact);
