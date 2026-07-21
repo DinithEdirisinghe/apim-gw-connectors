@@ -463,6 +463,8 @@ public class KongFederatedAPIDiscovery implements FederatedAPIDiscovery {
 
             // Calculate composite configuration hash
             StringBuilder hashInput = new StringBuilder();
+            String apiUpdated = kongAPI.getUpdatedAt() != null ? kongAPI.getUpdatedAt() : "0";
+            hashInput.append("api:").append(kongAPI.getId()).append(":").append(apiUpdated).append("|");
             String svcUpdated = svc.getUpdatedAt() != null ? String.valueOf(svc.getUpdatedAt()) : "0";
             hashInput.append("svc:").append(svc.getId()).append(":").append(svcUpdated).append("|");
 
